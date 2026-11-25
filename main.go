@@ -26,6 +26,8 @@ type Shipment struct {
 type Check struct {
 	ID string `json:"id"`
 	Result string `json:"result"`
+	expected string
+	observed *string
 }
 
 type Report struct {
@@ -58,6 +60,7 @@ func Evaluate(snapshot fs.FS) (Report, error) {
 		previous, seen[row.ID] = row.At, true
 		content, err := fs.ReadFile(snapshot, path.Join("objects", row.Object))
 		result := "ok"
+		var observed *string
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			result = "missing_document"
@@ -65,9 +68,11 @@ func Evaluate(snapshot fs.FS) (Report, error) {
 			return Report{}, err
 		default:
 			actual := sha256.Sum256(content)
+			readDigest := hex.EncodeToString(actual[:])
+			observed = &readDigest
 			if !bytes.Equal(actual[:], digest) { result = "digest_mismatch" }
 		}
-		report.Checks = append(report.Checks, Check{row.ID, result})
+		report.Checks = append(report.Checks, Check{ID: row.ID, Result: result, expected: hex.EncodeToString(digest), observed: observed})
 		if result != "ok" { report.Complete = false }
 		if report.Complete {
 			at := row.At
@@ -78,6 +83,9 @@ func Evaluate(snapshot fs.FS) (Report, error) {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "evidence" {
+		return exportEvidence(args[1:], stdout, stderr)
+	}
 	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: revaskel <répertoire-instantané>")
 		return 2

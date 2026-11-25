@@ -35,3 +35,13 @@ Ce premier adaptateur lit un répertoire local de confiance contenant un manifes
 ## Premier chantier à reprendre
 
 Restaurer une petite base PostgreSQL et un répertoire objet dans un environnement isolé. Produire le manifeste depuis le registre des opérations attendues et tester la lecture d’un document avec les droits de l’opérateur.
+
+## Publier les contrôles d’un instantané
+
+Le lot privé `evidence.v1` contient une observation par expédition avec l’empreinte attendue et celle du fichier effectivement lu. Une empreinte observée nulle signale un document absent. L’heure fournie est celle de la vérification sur l’horloge commune de l’exercice. Elle est indépendante de la date de validation de l’expédition.
+
+```sh
+go run . evidence --case-id exercice-01 --observed-at 8 --uncertainty-s 1 examples/partial > reprise.json
+```
+
+L’exercice complet se lance avec `make demo-suite` depuis [Horvessane](https://github.com/PISSARAW/Horvessane).
