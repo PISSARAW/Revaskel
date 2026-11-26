@@ -38,42 +38,62 @@ type Report struct {
 
 var objectName = regexp.MustCompile(`^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$`)
 
-func Evaluate(snapshot fs.FS) (Report, error) {
+func readManifest(snapshot fs.FS) ([]Shipment, error) {
 	raw, err := fs.ReadFile(snapshot, "shipments.json")
-	if err != nil { return Report{}, err }
+	if err != nil { return nil, err }
 	var rows []Shipment
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&rows); err != nil { return Report{}, err }
-	if decoder.Decode(new(any)) != io.EOF { return Report{}, errors.New("données après le manifeste") }
-	if len(rows) == 0 { return Report{}, errors.New("instantané vide") }
+	if err := decoder.Decode(&rows); err != nil { return nil, err }
+	if decoder.Decode(new(any)) != io.EOF { return nil, errors.New("données après le manifeste") }
+	if len(rows) == 0 { return nil, errors.New("instantané vide") }
+
+	return rows, nil
+}
+
+func validateRow(row Shipment, previous time.Time) ([]byte, error) {
+	digest, err := hex.DecodeString(row.SHA)
+	if err != nil || len(digest) != sha256.Size || row.ID == "" ||
+		row.At.IsZero() || !row.At.After(previous) || !objectName.MatchString(row.Object) {
+		return nil, fmt.Errorf("expédition invalide ou désordonnée %q", row.ID)
+	}
+	return digest, nil
+}
+
+func checkDocument(snapshot fs.FS, row Shipment, digest []byte) (Check, error) {
+	content, err := fs.ReadFile(snapshot, path.Join("objects", row.Object))
+	result := "ok"
+	var observed *string
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		result = "missing_document"
+	case err != nil:
+		return Check{}, err
+	default:
+		actual := sha256.Sum256(content)
+		readDigest := hex.EncodeToString(actual[:])
+		observed = &readDigest
+		if !bytes.Equal(actual[:], digest) { result = "digest_mismatch" }
+	}
+	return Check{ID: row.ID, Result: result, expected: hex.EncodeToString(digest), observed: observed}, nil
+}
+
+func Evaluate(snapshot fs.FS) (Report, error) {
+	rows, err := readManifest(snapshot)
+	if err != nil { return Report{}, err }
 
 	report := Report{Complete: true}
 	seen := make(map[string]bool)
 	var previous time.Time
 	for _, row := range rows {
-		digest, err := hex.DecodeString(row.SHA)
-		if err != nil || len(digest) != sha256.Size || row.ID == "" || seen[row.ID] ||
-			row.At.IsZero() || !row.At.After(previous) || !objectName.MatchString(row.Object) {
-			return Report{}, fmt.Errorf("expédition invalide ou désordonnée %q", row.ID)
-		}
+		digest, err := validateRow(row, previous)
+		if err != nil { return Report{}, err }
+		if seen[row.ID] { return Report{}, fmt.Errorf("expédition dupliquée %q", row.ID) }
 		previous, seen[row.ID] = row.At, true
-		content, err := fs.ReadFile(snapshot, path.Join("objects", row.Object))
-		result := "ok"
-		var observed *string
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			result = "missing_document"
-		case err != nil:
-			return Report{}, err
-		default:
-			actual := sha256.Sum256(content)
-			readDigest := hex.EncodeToString(actual[:])
-			observed = &readDigest
-			if !bytes.Equal(actual[:], digest) { result = "digest_mismatch" }
-		}
-		report.Checks = append(report.Checks, Check{ID: row.ID, Result: result, expected: hex.EncodeToString(digest), observed: observed})
-		if result != "ok" { report.Complete = false }
+		check, err := checkDocument(snapshot, row, digest)
+		if err != nil { return Report{}, err }
+		report.Checks = append(report.Checks, check)
+		if check.Result != "ok" { report.Complete = false }
 		if report.Complete {
 			at := row.At
 			report.LastCoherent = &at
