@@ -5,3 +5,11 @@ demo:
 
 test:
 	go test ./...
+
+.PHONY: setup quality
+
+setup:
+	git config --local core.hooksPath .githooks
+
+quality:
+	sh quality/gate.sh staged
